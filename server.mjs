@@ -11,11 +11,12 @@
 //   DATABASE_URL      Postgres (Supabase) to keep the WhatsApp login in, so it
 //                     survives restarts on hosts with a throwaway disk (Render free).
 //   WA_AUTH_DIR       without DATABASE_URL, the login is kept in this folder (default ./auth)
+//   WA_SITE_URL       the booking site (default https://namaste-booking.vercel.app)
 
 import http from 'node:http';
 import { rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import postgres from 'postgres';
@@ -27,6 +28,10 @@ const AUTH_DIR = process.env.WA_AUTH_DIR || './auth';
 // prepare:false so it also works through Supabase's transaction pooler (port 6543).
 const sql = process.env.DATABASE_URL ? postgres(process.env.DATABASE_URL, { prepare: false, max: 3, onnotice: () => {} }) : null;
 const GAP_MS = 2500; // pause between sends so the number doesn't look like a spam bot
+// The booking site: incoming messages go to /api/wa/inbound, and /api/wa/tick
+// runs every few minutes (releases unpaid holds and messages those customers).
+const SITE_URL = (process.env.WA_SITE_URL || 'https://namaste-booking.vercel.app').replace(/\/+$/, '');
+const TICK_MS = 5 * 60 * 1000;
 
 if (SECRET.length < 16) {
   console.error('WA_BRIDGE_SECRET must be set (16+ characters).');
@@ -58,6 +63,10 @@ async function start() {
     syncFullHistory: false,
   });
   sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('messages.upsert', ({ messages, type }) => {
+    if (type !== 'notify') return;
+    for (const m of messages) handleIncoming(m).catch((e) => console.error('[wa] incoming failed', e));
+  });
   sock.ev.on('connection.update', async (u) => {
     if (u.qr) {
       state = 'scan';
@@ -166,6 +175,45 @@ const server = http.createServer(async (req, res) => {
     return reply(res, 500, { error: e instanceof Error ? e.message : 'failed' });
   }
 });
+
+/* ── incoming messages → site ──────────────────────────────────────── */
+
+const textOf = (msg) =>
+  msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || '';
+
+async function site(path, body) {
+  const res = await fetch(SITE_URL + path, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(25_000),
+  });
+  return res.ok ? res.json() : {};
+}
+
+async function handleIncoming(m) {
+  const jid = m.key?.remoteJid || '';
+  if (m.key?.fromMe || !m.message || jid.endsWith('@g.us') || jid === 'status@broadcast') return;
+  // Skip anything older than 10 minutes (history replayed after a reconnect).
+  if (Number(m.messageTimestamp || 0) * 1000 < Date.now() - 10 * 60 * 1000) return;
+  const msg = m.message;
+  const quotedMsg = msg.extendedTextMessage?.contextInfo?.quotedMessage || msg.imageMessage?.contextInfo?.quotedMessage;
+  const out = await site('/api/wa/inbound', {
+    from: [jid, m.key.senderPn, m.key.remoteJidAlt, m.key.participant].filter(Boolean),
+    text: textOf(msg),
+    quoted: textOf(quotedMsg),
+    hasImage: Boolean(msg.imageMessage),
+  });
+  if (out.forward?.to && msg.imageMessage) {
+    const image = await downloadMediaMessage(m, 'buffer', {}, { logger: log, reuploadRequest: sock.updateMediaMessage });
+    await enqueue(() => sock.sendMessage(`${out.forward.to}@s.whatsapp.net`, { image, caption: out.forward.caption }));
+  }
+  if (out.reply) await enqueue(() => sock.sendMessage(jid, { text: out.reply }, { quoted: m }));
+}
+
+setInterval(() => {
+  site('/api/wa/tick', {}).catch((e) => console.error('[wa] tick failed', e.message));
+}, TICK_MS);
 
 server.listen(PORT, () => console.log(`[wa] bridge listening on :${PORT} (login kept in ${sql ? 'Postgres' : AUTH_DIR})`));
 start().catch((e) => {

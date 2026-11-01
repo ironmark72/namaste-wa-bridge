@@ -26,6 +26,15 @@ this runs on its own server: Render's free plan, kept awake by Supabase.
 6. Site admin → Bookings → **WhatsApp messages** card → scan the QR with the
    sending number (WhatsApp → Linked devices → Link a device).
 
+## Two-way messages
+
+Incoming WhatsApp messages are relayed to the site (`/api/wa/inbound`): the
+studio's admin number can reply **received** / **not received** to a booking
+alert to confirm or cancel it, and payment screenshots customers send into the
+chat are forwarded to the admin. Every 5 minutes the bridge calls
+`/api/wa/tick`, which releases unpaid holds and messages those customers.
+`WA_SITE_URL` overrides the site address (default https://namaste-booking.vercel.app).
+
 ## Endpoints (all but /health need `Authorization: Bearer <secret>`)
 
 - `GET /health`: liveness (this is what Supabase pings)
