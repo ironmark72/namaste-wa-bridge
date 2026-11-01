@@ -29,7 +29,7 @@ this runs on its own server: Render's free plan, kept awake by Supabase.
 ## Endpoints (all but /health need `Authorization: Bearer <secret>`)
 
 - `GET /health`: liveness (this is what Supabase pings)
-- `GET /status`: `{ state: starting|scan|connected|reconnecting|logged_out, qr, me }`
+- `GET /status`: `{ state: starting|scan|connected|reconnecting|logged_out, qr, me, store: postgres|files }`
 - `POST /send` `{ to: "919812345678", text, image? }`: one message (`image` = https URL, sent with `text` as caption); sends are spaced ~2.5s apart
 - `POST /logout`: unlink the number; a fresh QR appears
 

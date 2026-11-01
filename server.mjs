@@ -133,7 +133,7 @@ const server = http.createServer(async (req, res) => {
     if (!authed(req)) return reply(res, 401, { error: 'unauthorized' });
 
     if (req.method === 'GET' && req.url === '/status') {
-      return reply(res, 200, { state, qr: qrDataUrl, me, error: lastError });
+      return reply(res, 200, { state, qr: qrDataUrl, me, error: lastError, store: sql ? 'postgres' : 'files' });
     }
     if (req.method === 'POST' && req.url === '/send') {
       const { to, text, image } = await readJson(req);
