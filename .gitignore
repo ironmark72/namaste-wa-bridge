@@ -1,3 +1,4 @@
 node_modules/
 auth/
 .env
+RENDER-SECRET.txt
