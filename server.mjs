@@ -41,6 +41,9 @@ let state = 'starting';
 let qrDataUrl = null;
 let me = null;
 let lastError = null;
+// Recent /health hits (the Supabase keep-alive ping), newest first, for /status.
+const pings = [];
+const bootedAt = new Date();
 
 async function start() {
   const store = sql ? await usePgAuthState(sql) : await useMultiFileAuthState(AUTH_DIR);
@@ -129,11 +132,15 @@ async function readJson(req) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.method === 'GET' && req.url === '/health') return reply(res, 200, { ok: true });
+    if (req.method === 'GET' && req.url === '/health') {
+      pings.unshift({ at: new Date().toISOString(), from: String(req.headers['user-agent'] || '').slice(0, 60) });
+      pings.length = Math.min(pings.length, 6);
+      return reply(res, 200, { ok: true });
+    }
     if (!authed(req)) return reply(res, 401, { error: 'unauthorized' });
 
     if (req.method === 'GET' && req.url === '/status') {
-      return reply(res, 200, { state, qr: qrDataUrl, me, error: lastError, store: sql ? 'postgres' : 'files' });
+      return reply(res, 200, { state, qr: qrDataUrl, me, error: lastError, store: sql ? 'postgres' : 'files', upSince: bootedAt.toISOString(), pings });
     }
     if (req.method === 'POST' && req.url === '/send') {
       const { to, text, image } = await readJson(req);
