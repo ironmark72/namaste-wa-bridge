@@ -16,7 +16,7 @@
 import http from 'node:http';
 import { rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage, makeCacheableSignalKeyStore } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import postgres from 'postgres';
@@ -46,6 +46,13 @@ let state = 'starting';
 let qrDataUrl = null;
 let me = null;
 let lastError = null;
+// Recently sent messages by id, so retry requests can be answered (getMessage).
+const sent = new Map();
+function remember(m) {
+  if (!m?.key?.id || !m.message) return;
+  sent.set(m.key.id, m.message);
+  if (sent.size > 2000) sent.delete(sent.keys().next().value);
+}
 // Recent outside /health hits (the Supabase keep-alive ping), newest first, for /status.
 const pings = [];
 const bootedAt = new Date();
@@ -56,7 +63,12 @@ async function start() {
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: undefined }));
   sock = makeWASocket({
     version,
-    auth,
+    // In-memory cache in front of the Postgres key store: back-to-back sends
+    // must see the newest encryption keys at once, or phones can't decrypt.
+    auth: { creds: auth.creds, keys: makeCacheableSignalKeyStore(auth.keys, log) },
+    // When a phone can't decrypt a message it asks for it again; answer from
+    // what we sent, or it stays on "Waiting for this message".
+    getMessage: async (key) => sent.get(key.id),
     logger: log,
     browser: Browsers.windows('Namaste Studio'),
     markOnlineOnConnect: false, // don't stop the phone getting notifications
@@ -64,6 +76,7 @@ async function start() {
   });
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('messages.upsert', ({ messages, type }) => {
+    for (const m of messages) if (m.key?.fromMe) remember(m);
     if (type !== 'notify') return;
     for (const m of messages) handleIncoming(m).catch((e) => console.error('[wa] incoming failed', e));
   });
@@ -113,7 +126,7 @@ async function sendMessage(to, text, image) {
   if (state !== 'connected' || !sock) return { ok: false, status: 503, error: `WhatsApp not connected (${state})` };
   const [hit] = await sock.onWhatsApp(to);
   if (!hit?.exists) return { ok: false, status: 404, error: `${to} is not on WhatsApp` };
-  await sock.sendMessage(hit.jid, image ? { image: { url: image }, caption: text } : { text });
+  remember(await sock.sendMessage(hit.jid, image ? { image: { url: image }, caption: text } : { text }));
   return { ok: true };
 }
 
@@ -206,9 +219,9 @@ async function handleIncoming(m) {
   });
   if (out.forward?.to && msg.imageMessage) {
     const image = await downloadMediaMessage(m, 'buffer', {}, { logger: log, reuploadRequest: sock.updateMediaMessage });
-    await enqueue(() => sock.sendMessage(`${out.forward.to}@s.whatsapp.net`, { image, caption: out.forward.caption }));
+    await enqueue(async () => remember(await sock.sendMessage(`${out.forward.to}@s.whatsapp.net`, { image, caption: out.forward.caption })));
   }
-  if (out.reply) await enqueue(() => sock.sendMessage(jid, { text: out.reply }, { quoted: m }));
+  if (out.reply) await enqueue(async () => remember(await sock.sendMessage(jid, { text: out.reply }, { quoted: m })));
 }
 
 setInterval(() => {
