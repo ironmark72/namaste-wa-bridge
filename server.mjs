@@ -41,7 +41,7 @@ let state = 'starting';
 let qrDataUrl = null;
 let me = null;
 let lastError = null;
-// Recent /health hits (the Supabase keep-alive ping), newest first, for /status.
+// Recent outside /health hits (the Supabase keep-alive ping), newest first, for /status.
 const pings = [];
 const bootedAt = new Date();
 
@@ -133,8 +133,13 @@ async function readJson(req) {
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
-      pings.unshift({ at: new Date().toISOString(), from: String(req.headers['user-agent'] || '').slice(0, 60) });
-      pings.length = Math.min(pings.length, 6);
+      // Render's own health check hits this every few seconds; only keep outside
+      // pings (the Supabase keep-alive), which are what stop the free plan sleeping.
+      const ua = String(req.headers['user-agent'] || '');
+      if (!ua.startsWith('Render/')) {
+        pings.unshift({ at: new Date().toISOString(), from: ua.slice(0, 60) });
+        pings.length = Math.min(pings.length, 6);
+      }
       return reply(res, 200, { ok: true });
     }
     if (!authed(req)) return reply(res, 401, { error: 'unauthorized' });
