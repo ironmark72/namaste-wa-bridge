@@ -1,0 +1,20 @@
+# Render Blueprint: New > Blueprint > pick this repo.
+# Free plan sleeps after 15 min without traffic; a Supabase cron job pings
+# /health every 10 min to keep it awake (see keepalive.sql). The WhatsApp login
+# lives in Postgres (DATABASE_URL), so restarts don't need a new QR scan.
+services:
+  - type: web
+    name: namaste-wa-bridge
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: WA_BRIDGE_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
