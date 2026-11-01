@@ -11,12 +11,16 @@ export async function usePgAuthState(sql) {
     const rows = await sql`select value from wa_auth where key = ${key}`;
     return rows[0] ? JSON.parse(rows[0].value, BufferJSON.reviver) : null;
   };
-  const write = (key, data) => {
+  // postgres.js queries only run when awaited, and Baileys fires saveCreds
+  // without awaiting it, so these must be real async functions.
+  const write = async (key, data) => {
     const value = JSON.stringify(data, BufferJSON.replacer);
-    return sql`insert into wa_auth (key, value) values (${key}, ${value})
-               on conflict (key) do update set value = excluded.value, updated_at = now()`;
+    await sql`insert into wa_auth (key, value) values (${key}, ${value})
+              on conflict (key) do update set value = excluded.value, updated_at = now()`;
   };
-  const remove = (key) => sql`delete from wa_auth where key = ${key}`;
+  const remove = async (key) => {
+    await sql`delete from wa_auth where key = ${key}`;
+  };
 
   // Baileys mutates this object in place; saveCreds persists it.
   const creds = (await read('creds')) || initAuthCreds();
@@ -50,6 +54,8 @@ export async function usePgAuthState(sql) {
     },
     saveCreds: () => write('creds', creds),
     /** Forget the login (after the phone unlinks) so a fresh QR appears. */
-    clear: () => sql`delete from wa_auth`,
+    clear: async () => {
+      await sql`delete from wa_auth`;
+    },
   };
 }
